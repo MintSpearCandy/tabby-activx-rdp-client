@@ -3,7 +3,8 @@
 # Usage: powershell -File scripts\phys-shot.ps1 [-WindowTitle <like-pattern>] [-Out <path>]
 param(
   [string]$WindowTitle = 'Tabby',
-  [string]$Out = "out\phys-shot.png"
+  [string]$Out = "out\phys-shot.png",
+  [string]$PathLike = '*arc*'
 )
 
 Add-Type -AssemblyName System.Drawing
@@ -22,7 +23,7 @@ public class Win {
 # Per-Monitor V2 (-4): physical pixels everywhere, no cross-monitor rescale.
 [Win]::SetThreadDpiAwarenessContext([IntPtr](-4)) | Out-Null
 $proc = Get-Process -Name Tabby -ErrorAction SilentlyContinue |
-    Where-Object { $_.MainWindowHandle -ne 0 -and ($_.Path -like '*arc*') } |
+    Where-Object { $_.MainWindowHandle -ne 0 -and ($_.Path -like $PathLike) } |
     Select-Object -First 1
 if (-not $proc) {
   $proc = Get-Process -Name Tabby -ErrorAction SilentlyContinue |

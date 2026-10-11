@@ -1,5 +1,7 @@
 # popup-rect.ps1 — enumerate the arc instance's native windows (the RDP
 # AtlAxWin popup) and print their physical rects vs the Tabby main window.
+param([string]$PathLike = '*arc*')
+
 Add-Type @"
 using System;
 using System.Text;
@@ -22,8 +24,8 @@ public class P {
 # monitors rescaled (x1.5/1.25 here), which previously made correct popups
 # look misplaced.
 [P]::SetThreadDpiAwarenessContext([IntPtr](-4)) | Out-Null
-$target = (Get-Process -Name Tabby -ErrorAction Stop | Where-Object { $_.Path -like '*arc*' } | Select-Object -First 1).Id
-Write-Output "arc pids: $((Get-Process -Name Tabby | Where-Object { $_.Path -like '*arc*' }).Id -join ',')"
+$target = (Get-Process -Name Tabby -ErrorAction Stop | Where-Object { $_.Path -like $PathLike } | Select-Object -First 1).Id
+Write-Output "arc pids: $((Get-Process -Name Tabby | Where-Object { $_.Path -like $PathLike }).Id -join ',')"
 
 $out = @()
 $cb = {
@@ -51,4 +53,4 @@ $cb = {
   return $true
 }
 [P]::EnumWindows($cb, [IntPtr]::Zero) | Out-Null
-$out | Where-Object { $_.Pid -in ((Get-Process -Name Tabby | Where-Object { $_.Path -like '*arc*' }).Id) } | Format-Table -AutoSize
+$out | Where-Object { $_.Pid -in ((Get-Process -Name Tabby | Where-Object { $_.Path -like $PathLike }).Id) } | Format-Table -AutoSize
