@@ -1,0 +1,11 @@
+node_modules/
+dist/
+release/
+build/
+out/
+native/build/
+native/*.node
+!native/rdp_host.node
+native-trace.log
+*.log
+*.png

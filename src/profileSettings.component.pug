@@ -1,0 +1,56 @@
+.form-line
+    .header
+        .title Host
+        .description Remote host (Windows RDP server, or an xrdp host on Linux)
+    input.form-control(
+        type='text',
+        [(ngModel)]='profile.options.host',
+        placeholder='192.168.1.10')
+
+.form-line
+    .header
+        .title Port
+        .description RDP port (3389 unless redirected)
+    input.form-control(
+        type='number',
+        [(ngModel)]='profile.options.port')
+
+.form-line
+    .header
+        .title Username
+        .description Leave empty to use the control's own logon UI
+    input.form-control(
+        type='text',
+        [(ngModel)]='profile.options.username')
+
+.form-line
+    .header
+        .title Domain
+        .description Optional (Windows accounts only)
+    input.form-control(
+        type='text',
+        [(ngModel)]='profile.options.domain')
+
+.form-line
+    .header
+        .title Password
+        .description( *ngIf='passwordLoaded') Stored in {{ credentials.storageName() }}
+        .description( *ngIf='!passwordLoaded') ...
+    input.form-control(
+        type='password',
+        [ngModel]='passwordValue',
+        (ngModelChange)='onPasswordChange($event)',
+        placeholder='(not set)')
+
+.form-line
+    .header
+        .title Initial desktop size
+        .description 0 × 0 = follow the pane size at connect time
+    input.form-control(
+        type='number',
+        [(ngModel)]='profile.options.width',
+        placeholder='width')
+    input.form-control(
+        type='number',
+        [(ngModel)]='profile.options.height',
+        placeholder='height')

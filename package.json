@@ -1,0 +1,62 @@
+{
+  "name": "tabby-activx-rdp-client",
+  "version": "0.1.0",
+  "description": "RDP desktops in Tabby tabs, rendered by the system ActiveX control (mstscax.dll) via a native N-API addon — the connection is made end-to-end by the Microsoft-signed RDP stack",
+  "keywords": [
+    "tabby-plugin",
+    "tabby",
+    "rdp",
+    "remote-desktop",
+    "activex",
+    "mstscax"
+  ],
+  "main": "dist/index.js",
+  "typings": "dist/index.d.ts",
+  "scripts": {
+    "build": "webpack --progress --color",
+    "watch": "webpack --progress --color --watch",
+    "typecheck": "tsc --noEmit",
+    "build:native": "node scripts/build-native.js",
+    "package": "node scripts/package.js",
+    "deploy": "node scripts/deploy.js",
+    "prepublishOnly": "npm run build"
+  },
+  "files": [
+    "dist",
+    "native",
+    "binding.gyp",
+    "LICENSE",
+    "README.md"
+  ],
+  "author": "Mosen (MintSpearCandy)",
+  "license": "MIT",
+  "peerDependencies": {
+    "@angular/core": ">=7.2.0"
+  },
+  "devDependencies": {
+    "@angular/common": "^7.2.8",
+    "@angular/core": "^7.2.8",
+    "@angular/forms": "^7.2.8",
+    "@angular/platform-browser": "^7.2.8",
+    "@electron/remote": "^2.0.12",
+    "@tabby-gang/to-string-loader": "^1.1.7-beta.2",
+    "@types/node": "^14.14.35",
+    "@types/webpack-env": "^1.16.0",
+    "apply-loader": "^2.0.0",
+    "awesome-typescript-loader": "^5.2.1",
+    "css-loader": "^5.1.1",
+    "pug": "^2.0.3",
+    "pug-loader": "^2.4.0",
+    "rxjs": "^6.2.1",
+    "sass": "^1.32.13",
+    "sass-loader": "^11.0.1",
+    "style-loader": "^2.0.0",
+    "tabby-core": "1.0.231-nightly.0",
+    "tabby-settings": "1.0.231-nightly.0",
+    "node-addon-api": "^8.0.0",
+    "node-gyp": "latest",
+    "typescript": "4.2.3",
+    "webpack": "^5.24.4",
+    "webpack-cli": "^4.5.0"
+  }
+}

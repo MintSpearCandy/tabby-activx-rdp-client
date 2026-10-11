@@ -1,0 +1,10 @@
+.hole-wrap
+    .hole(#hole)
+    .rdp-status-bar
+        span.rdp-state {{ state }}
+        span.rdp-detail(*ngIf='stateDetail')  {{ stateDetail }}
+        button.btn.btn-sm.btn-link((click)='reconnect()', *ngIf='showReconnect') reconnect
+.rdp-diag(*ngIf='diag && diag.status !== "ok"')
+    h3 ActiveX RDP bridge unavailable
+    p {{ diag.detail }}
+    p.dim The tab stays open; nothing will crash.

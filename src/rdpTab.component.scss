@@ -1,0 +1,70 @@
+:host {
+    flex: auto;
+    display: flex;
+    position: relative;
+    overflow: hidden;
+}
+
+.hole-wrap {
+    flex: auto;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+}
+
+// The "hole": a placeholder div whose screen rect the native RDP popup is
+// aligned to. Never painted — the owned popup HWND is the actual surface.
+// The margin insets the popup inside the pane so the desktop reads as pane
+// content rather than covering the whole window.
+.hole {
+    flex: auto;
+    margin: 6px;
+}
+
+// Persistent status strip below the hole (outside the popup's rect, so it is
+// never covered by the native window).
+.rdp-status-bar {
+    flex: none;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 10px;
+    font-size: 12px;
+    opacity: 0.85;
+    border-top: 1px solid rgba(128, 128, 128, 0.25);
+
+    .rdp-state.connected {
+        color: #a6e3a1;
+    }
+    .rdp-state.error,
+    .rdp-state.disconnected {
+        color: #f38ba8;
+    }
+    .rdp-state.connecting {
+        color: #f9e2af;
+    }
+}
+
+.rdp-diag {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 24px;
+    gap: 8px;
+
+    h3 {
+        margin: 0;
+    }
+    p {
+        margin: 0;
+        max-width: 560px;
+    }
+    p.dim {
+        opacity: 0.6;
+    }
+}
