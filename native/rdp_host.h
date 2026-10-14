@@ -28,7 +28,13 @@ struct SessionOptions {
   std::wstring domain;     // optional
   long width = 1024;       // initial desktop size (physical px)
   long height = 768;
-  bool enableCredSsp = true;  // NLA / CredSSP support (required by modern servers)
+  bool enableCredSsp = true;  // NLA / CredSSP support. Disable for servers
+                              // without NLA (xrdp 0.9 packages built without
+                              // CredSSP): with CredSSP ON and NLA unavailable,
+                              // mstscax downgrades but never sends the
+                              // credentials in the Client Info PDU, so those
+                              // servers always show their logon screen. With
+                              // it OFF the legacy path auto-logs in.
 };
 
 // Best-effort name for a known IMsTscAxEvents dispid; "event_<n>" otherwise.
@@ -46,6 +52,11 @@ SessionId CreateSession(HWND parent, const RECT& rect, const SessionOptions& opt
 bool SessionConnect(SessionId id);
 bool SessionDisconnect(SessionId id);
 bool SessionSetBounds(SessionId id, const RECT& rect);
+// Visibility intent from JS (tab activation, overlay yielding): a real
+// SW_HIDE/SW_SHOWNOACTIVATE on the popup, not a coordinate park — parking by
+// coordinates used to arm the display debounce and re-negotiate the remote
+// resolution to the sentinel size on every tab switch.
+bool SessionSetVisible(SessionId id, bool visible);
 // Live resize without reconnect (IMsRdpClient9::UpdateSessionDisplaySettings).
 bool SessionUpdateDisplay(SessionId id, long width, long height);
 bool SessionDestroy(SessionId id);

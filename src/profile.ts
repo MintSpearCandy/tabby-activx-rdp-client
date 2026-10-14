@@ -20,6 +20,7 @@ export class ActivxRdpProfileProvider extends QuickConnectProfileProvider<RdpPro
             domain: '',
             width: 0,
             height: 0,
+            enableCredSsp: true,
         },
     }
 
@@ -39,6 +40,7 @@ export class ActivxRdpProfileProvider extends QuickConnectProfileProvider<RdpPro
                     domain: '',
                     width: 0,
                     height: 0,
+                    enableCredSsp: true,
                 },
             } as PartialProfile<RdpProfile>,
         ]
@@ -66,6 +68,7 @@ export class ActivxRdpProfileProvider extends QuickConnectProfileProvider<RdpPro
                 domain: '',
                 width: 0,
                 height: 0,
+                enableCredSsp: true,
             },
         } as PartialProfile<RdpProfile>
     }

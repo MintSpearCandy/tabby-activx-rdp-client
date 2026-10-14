@@ -13,12 +13,92 @@
 }
 
 // The "hole": a placeholder div whose screen rect the native RDP popup is
-// aligned to. Never painted — the owned popup HWND is the actual surface.
-// The margin insets the popup inside the pane so the desktop reads as pane
-// content rather than covering the whole window.
+// aligned to. Never painted while a session shows — the owned popup HWND is
+// the actual surface. The margin insets the popup inside the pane so the
+// desktop reads as pane content rather than covering the whole window. The
+// frame is a box-shadow ring (not a border): a border would sit inside the
+// border box, half of it under the popup's rect; the ring is drawn 1px
+// OUTSIDE the box the popup covers, so the desktop reads as a framed pane.
+// --theme-fg-more-2 (set by Tabby's theme service) keeps it visible on
+// light and dark themes alike.
 .hole {
     flex: auto;
     margin: 6px;
+    box-shadow: 0 0 0 2px var(--theme-fg-more-2, rgba(128, 128, 128, 0.6));
+}
+
+// Connection gate — shown inside the hole until the session is connected.
+.rdp-gate {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.rdp-gate-card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 24px 28px;
+    width: min(420px, 90%);
+    border-radius: 8px;
+    background: var(--theme-bg-more, rgba(32, 32, 40, 0.9));
+    box-shadow: 0 0 0 1px var(--theme-fg-more-2, rgba(128, 128, 128, 0.6)),
+                0 8px 24px rgba(0, 0, 0, 0.35);
+
+    .rdp-gate-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+
+        i {
+            font-size: 18px;
+            opacity: 0.9;
+        }
+    }
+
+    .rdp-gate-title {
+        font-size: 15px;
+        font-weight: 600;
+    }
+
+    .rdp-gate-form {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .rdp-form-row {
+        display: flex;
+        gap: 8px;
+
+        // Host row: host flexes, port stays narrow.
+        input.rdp-port {
+            flex: none;
+            width: 84px;
+        }
+
+        input.form-control {
+            min-width: 0;
+        }
+    }
+
+    .rdp-gate-detail {
+        font-size: 12px;
+        color: var(--theme-fg-more-2, #999);
+        word-break: break-word;
+        text-align: center;
+    }
+
+    .rdp-gate-btn {
+        min-width: 140px;
+        align-self: center;
+
+        i.fa-spin {
+            margin-right: 8px;
+        }
+    }
 }
 
 // Persistent status strip below the hole (outside the popup's rect, so it is

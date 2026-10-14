@@ -13,6 +13,15 @@ export interface RdpProfileOptions {
     /** Initial desktop size in physical pixels (0 = follow pane size). */
     width: number
     height: number
+    /**
+     * Negotiate NLA via CredSSP (default). Turn OFF for servers without NLA
+     * (e.g. xrdp builds without CredSSP): with it on and NLA unavailable,
+     * mstscax downgrades to TLS but never sends the credentials in the
+     * Client Info PDU, so the server shows its own logon screen. With it
+     * off, the credentials ride the legacy Client Info PDU and such servers
+     * log in automatically from the stored username/password.
+     */
+    enableCredSsp: boolean
 }
 
 export interface RdpProfile extends ConnectableProfile {

@@ -98,11 +98,15 @@ Napi::Value Create(const Napi::CallbackInfo& info) {
   rdphost::SessionOptions opt;
   opt.server = ToW(o, "server");
   opt.port = static_cast<uint16_t>(Num(o, "port", 3389));
-  opt.username = ToW(o, "user");
+  opt.username = ToW(o, "username");
   opt.password = ToW(o, "password");
   opt.domain = ToW(o, "domain");
   opt.width = Num(o, "width", w);
   opt.height = Num(o, "height", h);
+  {
+    Napi::Value v = o.Get("enableCredSsp");
+    if (v.IsBoolean()) opt.enableCredSsp = v.As<Napi::Boolean>().Value();
+  }
   if (opt.server.empty()) {
     Napi::TypeError::New(env, "options.server required").ThrowAsJavaScriptException();
     return env.Null();
@@ -182,6 +186,16 @@ Napi::Value UpdateDisplay(const Napi::CallbackInfo& info) {
   return Napi::Boolean::New(env, id != 0 && rdphost::SessionUpdateDisplay(id, w, h));
 }
 
+Napi::Value SetVisible(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 2 || !info[1].IsBoolean()) {
+    Napi::TypeError::New(env, "setVisible(id,boolean) expected").ThrowAsJavaScriptException();
+    return env.Null();
+  }
+  const rdphost::SessionId id = IdArg(info);
+  return Napi::Boolean::New(env, id != 0 && rdphost::SessionSetVisible(id, info[1].As<Napi::Boolean>().Value()));
+}
+
 Napi::Value Shutdown(const Napi::CallbackInfo& info) {
   ShutdownNow();
   return info.Env().Undefined();
@@ -195,6 +209,7 @@ Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
   exports.Set("disconnect", Napi::Function::New(env, Disconnect));
   exports.Set("destroy", Napi::Function::New(env, Destroy));
   exports.Set("setBounds", Napi::Function::New(env, SetBounds));
+  exports.Set("setVisible", Napi::Function::New(env, SetVisible));
   exports.Set("updateDisplay", Napi::Function::New(env, UpdateDisplay));
   exports.Set("shutdown", Napi::Function::New(env, Shutdown));
   return exports;

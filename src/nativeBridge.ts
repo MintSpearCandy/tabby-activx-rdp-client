@@ -31,6 +31,7 @@ export interface CreateSessionOptions {
     domain: string
     width: number
     height: number
+    enableCredSsp: boolean
 }
 
 interface RdpHostModule {
@@ -38,6 +39,7 @@ interface RdpHostModule {
     connect (id: number): boolean
     disconnect (id: number): boolean
     setBounds (id: number, x: number, y: number, w: number, h: number): boolean
+    setVisible (id: number, visible: boolean): boolean
     updateDisplay (id: number, w: number, h: number): boolean
     destroy (id: number): boolean
     setEventHandler (cb: (ev: RdpEvent) => void): void

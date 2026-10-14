@@ -18,10 +18,32 @@ Architecture and the full feasibility analysis live in the PoC repo:
   presentation layer covers child HWNDs; only owned popups survive z-order).
 - The tab component renders a "hole" placeholder div; the popup's physical
   screen rect is aligned to it every animation frame (rect in DIP × display
-  scale factor).
-- Live resize is debounced in native (250 ms) — see the PoC's S3 notes for
-  why calling `UpdateSessionDisplaySettings` per resize tick fast-fails the
-  process.
+  scale factor). Visibility is derived from that rect alone: parked rects
+  (inactive tabs at `left:-1000%`, collapsed/maximized-away panes) hide the
+  popup; split panes that merely lose focus keep showing.
+- Window moves are tracked by a native `SetWinEventHook`
+  (`EVENT_OBJECT_LOCATIONCHANGE`, out-of-context — dispatched by the manager
+  thread's message loop): the viewport-relative rect does not change while
+  the window moves, so the rAF loop is blind to them by construction and the
+  popup re-anchors per move step instead of catching up in 300 ms jumps.
+- Tab activation and overlay yielding park the popup via a native visibility
+  API (`setVisible` → real `SW_HIDE`/`SW_SHOWNOACTIVATE`). The yield check is
+  a per-frame DOM hit-test (`elementFromPoint` on the hole's center and
+  corners): a *mouse-opaque* element covering any sample point — a modal
+  backdrop, an open menu — hides the popup so those UIs stay clickable.
+  Hint layers (`pointer-events`-transparent tooltips/toasts, plus an
+  explicit `.tooltip`/toast-container exclusion) never trigger it.
+- Size changes apply throttled (~50 ms) while position changes apply every
+  frame: each applied size makes the control re-stretch its framebuffer
+  (`WM_SIZE` → full redraw), which at rAF cadence dominated the CPU during
+  window resizes. A 20 s / 556-resize storm now produces exactly one
+  `UpdateSessionDisplaySettings` call (after the storm settles).
+- Live resize is debounced in native (250 ms) and only armed when the rect's
+  *size* actually changed; `UpdateSessionDisplaySettings` calls are deduped
+  against the last pushed resolution, and a resolution queued while the
+  session is still connecting is replayed on `connected` instead of being
+  dropped. See the PoC's S3 notes for why calling it per resize tick
+  fast-fails the process.
 
 ## Status
 
@@ -104,13 +126,103 @@ The PoC ran the addon in Electron's **main** process; Tabby loads it in the
   away/back parks and restores, window move follows, and the logged-in
   XFCE desktop renders inside the framed pane.
 
-### Logon on the WSL test target
+### Presentation-layer rework (2026-10-13, user-reported symptoms)
 
-`ClearTextPassword` only auto-submits over CredSSP/NLA. Ubuntu's xrdp 0.9.24
-advertises `[SSL|RDP]` even with `security_layer=negotiate`, so the greeter
-is expected there — real Windows targets with NLA log in automatically.
-For the test target, `scripts/greeter-login.ps1` auto-fills the greeter via
-clipboard sync + SendKeys (the RDP channel forwards the local clipboard).
+Three user-visible defects traced to the sync mechanisms and fixed together
+(**verified live on the arc instance**, see `scripts/move-follow-test.ps1`,
+`scripts/overlay-yield-test.js`, `scripts/tabs-switch-test.js`):
+
+1. **"Moving the window stalls the desktop"** — window moves don't change
+   the hole's viewport-relative rect, so the rAF loop never re-pushed and
+   the only tracker was the 300 ms glue tick (stepwise catch-up). Fixed with
+   the WinEvent hook above: popup follows within 100 ms per move step
+   (measured delta exactly +200,+100).
+2. **"The desktop covers functional UI"** — Tabby's overlays (command
+   palette, modals, dropdowns, toasts) render in the DOM, physically below
+   the Win32 popup; anything overlapping the hole was unclickable. Fixed
+   with the overlay yield: palette open → popup `SW_HIDE`, closed → restored
+   (verified end-to-end via CDP).
+3. **"Fresh sessions don't fit the pane"** — the initial rect was sampled
+   mid-layout in `ngAfterViewInit` (became the RDP resolution), and a
+   resolution queued while connecting was dropped at flush time, pinning the
+   desktop at its initial size forever. Fixed: the rect is sampled after the
+   layout settles (rAF retry loop), non-live pending entries are parked
+   (replayed on `connected`), and no-op negotiations are deduped.
+
+Also fixed in the same pass: the coordinate park (`-32000` + 640×480) used
+to arm the display debounce on every tab switch — the remote desktop was
+genuinely re-negotiated to 640×480 and back; `CMD_SETBOUNDS` now moves only
+when the on-screen rect differs (no more per-frame intermediate-size
+replays), and `NativeTrace` can be silenced with `ACTIVX_RDP_TRACE=0` (it
+ran per-call `fopen`/`fclose` on the STA thread).
+
+### Presentation polish round 2 (2026-10-13, follow-up reports)
+
+- **"Resizing the window burns CPU / refreshes frantically"** — two causes
+  fixed: `SWP_NOCOPYBITS` on the per-frame `SetWindowPos` forced a full
+  client-area repaint at 60 Hz (removed); size changes are now merged to one
+  application per ~50 ms while positions still track every frame (`ReanchorSession`
+  honors the throttle too, or the WinEvent path would have leaked every
+  intermediate size back in). Verified: 20 s storm at 50 Hz → one resolution
+  negotiation, session alive, popup aligned.
+- **"Any overlay on the page hides the desktop"** — the first yield
+  implementation watched for *any* body-level overlay element intersecting
+  the hole, which mis-fired on tooltips (tab-bar hover), toasts and stray
+  containers. Replaced with the hit-test yield described above: only
+  elements that actually take the mouse over the hole's sampled points
+  trigger it. Verified: tooltip shown → popup stays visible; palette
+  modal → yields and restores.
+
+### Interaction rework round 3 (2026-10-13, user reports)
+
+- **"Activating one split pane hid the other desktop"** — the park was
+  driven by `focused$`/`blurred$`, but in a split tab Tabby blurs every
+  non-focused pane (`SplitTabComponent.focus`), even panes that remain
+  plainly visible side by side. The focus subscriptions are gone: visibility
+  is now derived entirely from the hole's rect in the frame loop — inactive
+  tabs move to `left:-1000%` and maximized-away panes collapse, both of
+  which park the popup (with a real `SW_HIDE`); focused-but-visible split
+  siblings keep showing. While parked the loop drops to a 120 ms poll.
+  Verified: two connected panes side by side, focus switched both ways —
+  both popups stay visible and aligned.
+- **"Connect only after confirmation"** — every new tab opens at a
+  connection gate (state `idle`, no session created) instead of firing an
+  RDP connection on open. The gate is an **editable connection form**
+  (host + port / username + password) prefilled from the profile: an
+  empty/builtin "ActiveX RDP" tab starts blank and is fully connectable
+  from the form; tabs created from a saved profile arrive with the stored
+  values already filled (including the password from the Vault/plain-text
+  store). Reconnects after drops and retries after errors reuse the same
+  card. The form wins for the connection target; the profile keeps owning
+  the advanced knobs (domain, desktop size, NLA/CredSSP). Verified both
+  ways: profile tab → prefilled → connected; builtin tab → blank form →
+  filled via DOM → connected.
+- **Pane UI redesigned** — the barely-visible reconnect link in the status
+  strip is gone; the gate card (theme-aware background, border, shadow)
+  is the single prominent action surface, and the status strip now shows
+  the connection target alongside the state. Enter in any field connects.
+- **Disconnect leaves a reachable gate** — after a disconnect the control
+  window blanks but stays above the DOM; the popup is now hidden unless
+  the session is `connected` (session-active gate in the view host), so
+  the Reconnect card is always visible and clickable.
+
+### Logon without NLA (the WSL/xrdp test target)
+
+`ClearTextPassword` auto-submits over two channels. With
+`EnableCredSspSupport` **on** and the server unable to negotiate NLA
+(Ubuntu's xrdp 0.9.24 package is built without CredSSP — its
+`security_layer=hybrid` is not even a recognized value), mstscax downgrades
+to TLS but keeps the credentials reserved for the CredSSP layer and never
+sends them in the Client Info PDU, so the server shows its own logon screen.
+With `EnableCredSspSupport` **off** (profile setting *NLA / CredSSP*,
+`enableCredSsp: false`), mstscax takes the legacy path and the stored
+username/password ride the Client Info PDU — such servers log in
+automatically. Real Windows targets with NLA keep the setting on.
+
+Verified on the test target (2026-10-13): `enableCredSsp: false` +
+stored credentials → connected straight into the logged-in XFCE desktop,
+no greeter (`scripts/greeter-login.ps1` and its SendKeys automation are no
+longer needed for this path).
 
 ## Dev
 

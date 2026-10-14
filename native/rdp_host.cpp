@@ -29,8 +29,17 @@ namespace {
 // Native-side diagnostics land in a file (stdout is not attached when the
 // addon runs inside Tabby's renderer). Path: %TEMP%\tabby-activx-rdp\trace.log
 // (the plugin directory itself may be read-only), overridable via the
-// ACTIVX_RDP_TRACE env var. Resolved once per process.
+// ACTIVX_RDP_TRACE env var (set it to "0" to silence: the per-call
+// fopen/vfprintf runs on the manager STA thread — the same thread that
+// hosts the RDP control — and event storms made it a real stutter source).
+// Resolved once per process.
 void NativeTrace(const char* fmt, ...) {
+  static const bool on = [] {
+    wchar_t v[8]{};
+    return !(GetEnvironmentVariableW(L"ACTIVX_RDP_TRACE", v, 8) &&
+             wcscmp(v, L"0") == 0);
+  }();
+  if (!on) return;
   static const std::wstring logPath = [] {
     wchar_t dir[MAX_PATH * 2]{};
     const wchar_t* base = nullptr;
@@ -60,17 +69,30 @@ constexpr UINT WM_CMD = WM_APP + 0x120;
 // Manager-thread timer IDs.
 constexpr UINT_PTR TIMER_GLUE = 1;      // periodic z-order glue
 constexpr UINT_PTR TIMER_DISPLAY = 2;   // debounced live-resize flush
+constexpr UINT_PTR TIMER_SIZE_FLUSH = 3;  // throttled size application
 // How long the window must stay quiet before we push one live-resize into
 // the control. UpdateSessionDisplaySettings walks the RDP connection layer
 // (framebuffer realloc + server negotiation); calling it per WM_SIZE tick
 // fails with E_UNEXPECTED mid-negotiation and, via the #import high-level
 // wrapper, used to surface as an uncaught _com_error.
 constexpr UINT DISPLAY_DEBOUNCE_MS = 250;
+// Every applied size change makes the control re-stretch its framebuffer
+// (WM_SIZE -> in-place resize -> full redraw). At the rAF loop's cadence
+// that dominates CPU during window resizes, so position updates apply every
+// frame (cheap — pure window moves) while size updates are merged to at
+// most one per interval.
+constexpr UINT SIZE_THROTTLE_MS = 50;
 
 // Message-only command window procedure: WM_CMD is handled here so delivery
 // survives foreign pumps on the manager thread (see Run()). Defined after
 // Manager (needs the complete type).
 LRESULT CALLBACK MgrWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp);
+
+// Owner-move tracker (out-of-context WinEvent; dispatched by this thread's
+// message loop). Also defined after Manager.
+void CALLBACK WinEventProc(HWINEVENTHOOK hook, DWORD event, HWND hwnd,
+                           LONG idObject, LONG idChild, DWORD idThread,
+                           DWORD dwmsEventTime);
 
 // ATL hosting (CAxWindow) requires a live CAtlModule: CComPolyObject
 // constructors call _pAtlModule->Lock(), and ATL's selectany _AtlComModule
@@ -90,6 +112,7 @@ enum Cmd : UINT_PTR {
   CMD_DISCONNECT,
   CMD_DESTROY,
   CMD_SETBOUNDS,
+  CMD_SETVISIBLE,
   CMD_UPDATE_DISPLAY,
   CMD_SHUTDOWN,
 };
@@ -111,6 +134,10 @@ int64_t VariantToInt(const VARIANT& v) {
 
 class EventSink;  // defined below; Session only holds a pointer
 
+// Connected-event replay hook, defined after Manager (needs the complete
+// type) — the sink's Invoke is inline and runs before Manager is declared.
+void ReplayPendingDisplayOnConnected(SessionId id);
+
 struct Session {
   SessionId id = 0;
   SessionOptions opt;
@@ -122,7 +149,14 @@ struct Session {
   CComObject<EventSink>* sink = nullptr;
   EventCb onEvent;
   bool live = false;  // manager thread: between connected() and disconnected()
+  bool shown = true;  // JS visibility intent (tab active / no overlay); owner
+                      // state still gates the final SW_SHOW in the glue tick
   RECT viewportRect{};  // last viewport-relative rect pushed by JS (manager thread)
+  long lastDispW = 0;  // resolution last pushed into UpdateSessionDisplaySettings
+  long lastDispH = 0;  // (initialized from opt; skips no-op negotiations)
+  ULONGLONG lastSizeApply = 0;  // GetTickCount64 of the last applied size change
+  SIZE throttledSize{};         // deferred target while a resize storm runs
+  bool hasThrottledSize = false;
 };
 
 // IDispatch sink for the control's source dispinterface IMsTscAxEvents.
@@ -167,8 +201,16 @@ class EventSink : public CComObjectRootEx<CComSingleThreadModel>,
     // Connection lifecycle gates live resize: UpdateSessionDisplaySettings is
     // only valid between connected(2) and the first terminal event.
     if (sess) {
-      if (dispid == 2) sess->live = true;
-      else if (dispid == 4 || dispid == 10 || dispid == 23) sess->live = false;
+      if (dispid == 2) {
+        sess->live = true;
+        // The session just went live: replay any resolution queued while it
+        // was still connecting. FlushPendingDisplay parks non-live pending
+        // entries, so without this the desktop keeps its initial size until
+        // the next unrelated setBounds change.
+        ReplayPendingDisplayOnConnected(sess->id);
+      } else if (dispid == 4 || dispid == 10 || dispid == 23) {
+        sess->live = false;
+      }
     }
     if (cb && *cb) (*cb)(sid, dispid, a, b);
     return S_OK;
@@ -303,6 +345,12 @@ class Manager {
   // Entry for MgrWndProc (declared before this class).
   void HandleCmdPublic(UINT_PTR cmd, LPARAM lp) { Handle(cmd, lp); }
 
+  // Entry for WinEventProc (same pattern).
+  void ReanchorForOwnerPublic(HWND owner) { ReanchorForOwner(owner); }
+
+  // Entry for ReplayPendingDisplayOnConnected (same pattern).
+  void FlushPendingDisplayForPublic(SessionId id) { FlushPendingDisplayFor(id); }
+
   bool Post(UINT_PTR cmd, SessionId id) {
     HWND w = msgWnd_;
     return w != nullptr && PostMessageW(w, WM_CMD, cmd, static_cast<LPARAM>(id));
@@ -311,6 +359,14 @@ class Manager {
   void QueueBounds(SessionId id, const RECT& r) {
     std::lock_guard<std::mutex> lk(pm_);
     pendingBounds_[id] = r;
+  }
+
+  void SetVisible(SessionId id, bool v) {
+    {
+      std::lock_guard<std::mutex> lk(pm_);
+      visible_[id] = v;
+    }
+    Post(CMD_SETVISIBLE, id);
   }
 
   void QueueDisplay(SessionId id, long w, long h) {
@@ -375,29 +431,17 @@ class Manager {
             Session* s = kv.second.get();
             if (!s->host.m_hWnd) continue;
             // Stay glued directly above the Electron window in z-order, and
-            // mirror its minimized/hidden state.
+            // mirror both the owner's minimized/hidden state and the JS
+            // visibility intent (tab active / overlay yielding).
             const bool ownerVisible = s->owner && !IsIconic(s->owner) && IsWindowVisible(s->owner);
-            if (!ownerVisible) {
-              ShowWindow(s->host.m_hWnd, SW_HIDE);
+            if (!ownerVisible || !s->shown) {
+              if (IsWindowVisible(s->host.m_hWnd)) ShowWindow(s->host.m_hWnd, SW_HIDE);
               continue;
             }
-            // Re-anchor to the owner's client origin: window moves don't
-            // change the hole's viewport-relative rect, so the JS rAF loop
-            // never re-pushes — the glue tick is what tracks the window.
-            POINT org{0, 0};
-            if (s->owner && ClientToScreen(s->owner, &org)) {
-              const LONG w = s->viewportRect.right - s->viewportRect.left;
-              const LONG h = s->viewportRect.bottom - s->viewportRect.top;
-              const LONG wantX = s->viewportRect.left + org.x;
-              const LONG wantY = s->viewportRect.top + org.y;
-              RECT cur{};
-              if (w > 0 && h > 0 && GetWindowRect(s->host.m_hWnd, &cur) &&
-                  (cur.left != wantX || cur.top != wantY ||
-                   cur.right - cur.left != w || cur.bottom - cur.top != h)) {
-                s->host.MoveWindow(wantX, wantY, w, h, FALSE);
-              }
-            }
-            if (!IsWindowVisible(s->host.m_hWnd)) ShowWindow(s->host.m_hWnd, SW_SHOW);
+            // Re-anchor (fallback path): window moves are tracked primarily
+            // by the WinEvent hook below; the tick catches anything it misses.
+            ReanchorSession(s);
+            if (!IsWindowVisible(s->host.m_hWnd)) ShowWindow(s->host.m_hWnd, SW_SHOWNOACTIVATE);
             BOOL okz = s->host.SetWindowPos(s->owner, 0, 0, 0, 0,
                                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
             static DWORD s_zlog = 0;
@@ -409,6 +453,10 @@ class Manager {
                    msg.wParam == TIMER_DISPLAY) {
           KillTimer(msgWnd_, TIMER_DISPLAY);
           FlushPendingDisplay();
+        } else if (msg.hwnd == msgWnd_ && msg.message == WM_TIMER &&
+                   msg.wParam == TIMER_SIZE_FLUSH) {
+          KillTimer(msgWnd_, TIMER_SIZE_FLUSH);
+          FlushThrottledSizes();
         } else {
           TranslateMessage(&msg);
           DispatchMessageW(&msg);
@@ -420,6 +468,12 @@ class Manager {
       }
     }
     if (msgWnd_) KillTimer(msgWnd_, TIMER_GLUE);
+    if (msgWnd_) KillTimer(msgWnd_, TIMER_DISPLAY);
+    if (msgWnd_) KillTimer(msgWnd_, TIMER_SIZE_FLUSH);
+    if (winEventHook_) {
+      UnhookWinEvent(winEventHook_);
+      winEventHook_ = nullptr;
+    }
 
     for (auto& kv : sessions_) Teardown(kv.second.get());
     sessions_.clear();
@@ -431,6 +485,87 @@ class Manager {
   Session* Get(SessionId id) {
     auto it = sessions_.find(id);
     return it == sessions_.end() ? nullptr : it->second.get();
+  }
+
+  // Move the popup to viewportRect + the owner's current client origin, with
+  // a GetWindowRect compare so repeated calls (WinEvent storm + glue tick)
+  // only issue the move when the on-screen rect actually differs. While a
+  // size is being throttled, the window keeps its current size (the deferred
+  // size is applied by TIMER_SIZE_FLUSH) — otherwise this path would apply
+  // every intermediate size and defeat the throttle.
+  void ReanchorSession(Session* s) {
+    if (!s->host.m_hWnd || !s->shown) return;
+    POINT org{0, 0};
+    if (!s->owner || !ClientToScreen(s->owner, &org)) return;
+    LONG w = s->viewportRect.right - s->viewportRect.left;
+    LONG h = s->viewportRect.bottom - s->viewportRect.top;
+    if (w <= 0 || h <= 0) return;
+    if (s->hasThrottledSize) {
+      RECT cur{};
+      if (GetWindowRect(s->host.m_hWnd, &cur)) {
+        w = cur.right - cur.left;
+        h = cur.bottom - cur.top;
+      }
+    }
+    const LONG wantX = s->viewportRect.left + org.x;
+    const LONG wantY = s->viewportRect.top + org.y;
+    RECT cur{};
+    if (GetWindowRect(s->host.m_hWnd, &cur) &&
+        (cur.left != wantX || cur.top != wantY ||
+         cur.right - cur.left != w || cur.bottom - cur.top != h)) {
+      s->host.MoveWindow(wantX, wantY, w, h, FALSE);
+    }
+  }
+
+  // Apply a size change (position from viewportRect + the owner's current
+  // client origin) and arm the debounced resolution sync.
+  void ApplySessionSize(Session* s, long w, long h) {
+    s->lastSizeApply = GetTickCount64();
+    POINT org{0, 0};
+    const bool haveOrg = s->owner && ClientToScreen(s->owner, &org);
+    const int px = haveOrg ? s->viewportRect.left + org.x : s->viewportRect.left;
+    const int py = haveOrg ? s->viewportRect.top + org.y : s->viewportRect.top;
+    s->host.SetWindowPos(nullptr, px, py, w, h, SWP_NOACTIVATE | SWP_NOZORDER);
+    {
+      std::lock_guard<std::mutex> lk(pm_);
+      pendingDisp_[s->id] = {w, h};
+    }
+    SetTimer(msgWnd_, TIMER_DISPLAY, DISPLAY_DEBOUNCE_MS, nullptr);
+  }
+
+  // TIMER_SIZE_FLUSH: apply the deferred size of every session whose resize
+  // was merged during a storm.
+  void FlushThrottledSizes() {
+    for (auto& kv : sessions_) {
+      Session* s = kv.second.get();
+      if (!s->hasThrottledSize || !s->host.m_hWnd) continue;
+      s->hasThrottledSize = false;
+      ApplySessionSize(s, s->throttledSize.cx, s->throttledSize.cy);
+    }
+  }
+
+  // WinEvent callback path: the owner moved/resized — re-anchor every
+  // session attached to that owner immediately, instead of waiting for the
+  // 300 ms glue tick (the drag looked like the desktop "stalling" and
+  // catching up in steps).
+  void ReanchorForOwner(HWND owner) {
+    for (auto& kv : sessions_) {
+      Session* s = kv.second.get();
+      if (s->owner == owner) ReanchorSession(s);
+    }
+  }
+
+  // Called from DoCreate (manager thread). Hooks all processes except our
+  // own (the renderer's internal Chromium windows fire constant location
+  // events); the callback filters by owner HWND. Not PID-scoped so multiple
+  // Tabby windows (one owner per renderer) all track.
+  void TryInstallWinEventHook() {
+    if (winEventHook_) return;
+    winEventHook_ = SetWinEventHook(
+        EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, nullptr,
+        &WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    NativeTrace("[rdphost] SetWinEventHook(LOCATIONCHANGE) = %p gle=%lu",
+                (void*)winEventHook_, GetLastError());
   }
 
   void Handle(UINT_PTR cmd, LPARAM lp) {
@@ -474,21 +609,75 @@ class Manager {
           // lift the popup over the tab bar. ClientToScreen also tracks
           // window moves and mixed-DPI monitors for free. The raw
           // viewport-relative rect is remembered for the glue-tick re-anchor.
-          s->viewportRect = r;
-          POINT org{0, 0};
-          const bool haveOrg = s->owner && ClientToScreen(s->owner, &org);
-          const int px = haveOrg ? r.left + org.x : r.left;
-          const int py = haveOrg ? r.top + org.y : r.top;
-          s->host.MoveWindow(px, py, r.right - r.left, r.bottom - r.top, TRUE);
+          const long newW = r.right - r.left, newH = r.bottom - r.top;
+          const bool sizeChanged =
+              newW != (s->viewportRect.right - s->viewportRect.left) ||
+              newH != (s->viewportRect.bottom - s->viewportRect.top);
+          s->viewportRect = r;  // position intent is always the latest
+          if (sizeChanged) {
+            const ULONGLONG now = GetTickCount64();
+            if (now - s->lastSizeApply < SIZE_THROTTLE_MS) {
+              // Resize storm mid-flight: keep the position tracking (pure
+              // window moves are cheap) but defer the size — every applied
+              // size change makes the control re-stretch its framebuffer
+              // (WM_SIZE -> full redraw), which at rAF cadence dominated
+              // the CPU during window resizes.
+              RECT cur{};
+              long curW = newW, curH = newH;
+              if (GetWindowRect(s->host.m_hWnd, &cur)) {
+                curW = cur.right - cur.left;
+                curH = cur.bottom - cur.top;
+              }
+              s->throttledSize = {newW, newH};
+              s->hasThrottledSize = true;
+              SetTimer(msgWnd_, TIMER_SIZE_FLUSH,
+                       SIZE_THROTTLE_MS - (UINT)(now - s->lastSizeApply) + 1, nullptr);
+              POINT org{0, 0};
+              const bool haveOrg = s->owner && ClientToScreen(s->owner, &org);
+              const int px = haveOrg ? r.left + org.x : r.left;
+              const int py = haveOrg ? r.top + org.y : r.top;
+              if (!(cur.left == px && cur.top == py)) {
+                s->host.SetWindowPos(nullptr, px, py, curW, curH,
+                                     SWP_NOACTIVATE | SWP_NOZORDER);
+              }
+              break;
+            }
+            ApplySessionSize(s, newW, newH);
+          } else {
+            // Pure move: dedup and track.
+            POINT org{0, 0};
+            const bool haveOrg = s->owner && ClientToScreen(s->owner, &org);
+            const int px = haveOrg ? r.left + org.x : r.left;
+            const int py = haveOrg ? r.top + org.y : r.top;
+            RECT cur{};
+            if (!(GetWindowRect(s->host.m_hWnd, &cur) && cur.left == px && cur.top == py &&
+                  cur.right - cur.left == newW && cur.bottom - cur.top == newH)) {
+              s->host.SetWindowPos(nullptr, px, py, newW, newH,
+                                   SWP_NOACTIVATE | SWP_NOZORDER);
+            }
+          }
           if (s->owner) {
             s->host.SetWindowPos(s->owner, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
           }
-          // Window geometry changed -> re-arm the debounced resolution sync.
-          {
-            std::lock_guard<std::mutex> lk(pm_);
-            pendingDisp_[id] = {r.right - r.left, r.bottom - r.top};
+        }
+        break;
+      }
+      case CMD_SETVISIBLE: {
+        bool v = false;
+        bool has = false;
+        {
+          std::lock_guard<std::mutex> lk(pm_);
+          auto it = visible_.find(id);
+          if (it != visible_.end()) {
+            v = it->second;
+            visible_.erase(it);
+            has = true;
           }
-          SetTimer(msgWnd_, TIMER_DISPLAY, DISPLAY_DEBOUNCE_MS, nullptr);
+        }
+        Session* s = Get(id);
+        if (s && has && s->host.m_hWnd) {
+          s->shown = v;
+          ShowWindow(s->host.m_hWnd, v ? SW_SHOWNOACTIVATE : SW_HIDE);
         }
         break;
       }
@@ -527,17 +716,53 @@ class Manager {
       if (!s->live) {
         // Not connected yet: UpdateSessionDisplaySettings is only valid for a
         // live session (the initial size went in via put_DesktopWidth/Height).
+        // Put it back — the connected(2) event replays it instead of letting
+        // the entry vanish (that used to pin the desktop at its initial size
+        // until the next unrelated setBounds change).
+        std::lock_guard<std::mutex> lk(pm_);
+        pendingDisp_[kv.first] = kv.second;
         continue;
       }
-      CComPtr<IMsRdpClient9> c9;
-      if (SUCCEEDED(s->ctrl->QueryInterface(__uuidof(IMsRdpClient9), (void**)&c9)) && c9) {
-        const long w = kv.second.first, h = kv.second.second;
-        HRESULT hr = c9->raw_UpdateSessionDisplaySettings(
-            (unsigned long)w, (unsigned long)h, (unsigned long)w, (unsigned long)h,
-            0, 100, 100);
-        NativeTrace("[rdphost] UpdateSessionDisplaySettings(%ldx%ld) hr=0x%08lx%s",
-                    w, h, (unsigned long)hr, SUCCEEDED(hr) ? "" : " (ignored)");
+      UpdateDisplayFor(s, kv.second.first, kv.second.second);
+    }
+  }
+
+  // Single choke point for resolution pushes: skips no-op negotiations
+  // (same size as the last successful push) so debounces from park/restore
+  // or 1px layout jitter never reach the connection layer.
+  void UpdateDisplayFor(Session* s, long w, long h) {
+    if (!s->ctrl || w <= 0 || h <= 0) return;
+    if (w == s->lastDispW && h == s->lastDispH) return;
+    CComPtr<IMsRdpClient9> c9;
+    if (SUCCEEDED(s->ctrl->QueryInterface(__uuidof(IMsRdpClient9), (void**)&c9)) && c9) {
+      HRESULT hr = c9->raw_UpdateSessionDisplaySettings(
+          (unsigned long)w, (unsigned long)h, (unsigned long)w, (unsigned long)h,
+          0, 100, 100);
+      if (SUCCEEDED(hr)) {
+        s->lastDispW = w;
+        s->lastDispH = h;
       }
+      NativeTrace("[rdphost] UpdateSessionDisplaySettings(%ldx%ld) hr=0x%08lx%s",
+                  w, h, (unsigned long)hr, SUCCEEDED(hr) ? "" : " (ignored)");
+    }
+  }
+
+  // Replays a queued resolution for one session on its connected(2) event
+  // (called from the event sink, which fires on this manager thread).
+  void FlushPendingDisplayFor(SessionId id) {
+    std::pair<long, long> d{};
+    bool has = false;
+    {
+      std::lock_guard<std::mutex> lk(pm_);
+      auto it = pendingDisp_.find(id);
+      if (it != pendingDisp_.end()) {
+        d = it->second;
+        has = true;
+      }
+    }
+    Session* s = Get(id);
+    if (s && s->live && has) {
+      UpdateDisplayFor(s, d.first, d.second);
     }
   }
 
@@ -563,6 +788,9 @@ class Manager {
     s->id = p->id;
     s->opt = p->opt;
     s->onEvent = std::move(p->onEvent);
+    s->lastDispW = s->opt.width;   // the initial negotiation is put_DesktopWidth/
+    s->lastDispH = s->opt.height;  // Height at create; UpdateDisplayFor skips
+                                   // pushes that would repeat it
 
     // Chromium's presentation stack covers both sibling and child HWNDs, so
     // the RDP host lives as a top-level WS_POPUP that tracks the hole's screen
@@ -601,6 +829,7 @@ class Manager {
       return;
     }
     NativeTrace("[rdphost] AtlAxWin container created hwnd=%p", (void*)h);
+    s->lastSizeApply = GetTickCount64();  // the create rect's size is applied
     HRESULT qhr = s->host.QueryControl(__uuidof(IMsTscAx), (void**)&s->ctrl);
     if (FAILED(qhr) || !s->ctrl) {
       NativeTrace("[rdphost] QueryControl(IMsTscAx) failed hr=0x%08lx", (unsigned long)qhr);
@@ -645,7 +874,8 @@ class Manager {
       if (SUCCEEDED(hrn) && ns) {
         hrp = ns->put_ClearTextPassword(CComBSTR(s->opt.password.c_str()));
       }
-      NativeTrace("[rdphost] password: QI=0x%08lx put=0x%08lx", (unsigned long)hrn, (unsigned long)hrp);
+      NativeTrace("[rdphost] password: QI=0x%08lx put=0x%08lx len=%zu",
+                  (unsigned long)hrn, (unsigned long)hrp, s->opt.password.size());
     }
     s->ctrl->put_DesktopWidth(s->opt.width);
     s->ctrl->put_DesktopHeight(s->opt.height);
@@ -685,22 +915,42 @@ class Manager {
             } else {
               hrPort = S_OK;  // default port, nothing to set
             }
-            if (s->opt.enableCredSsp) {
+            // EnableCredSspSupport is always set (not just when true): with it
+            // ON and the server unable to negotiate NLA, mstscax downgrades
+            // to TLS but keeps the credentials reserved for the CredSSP
+            // layer — they are never sent in the Client Info PDU, so non-NLA
+            // servers (xrdp 0.9 packages built without CredSSP) always show
+            // their logon screen. With it OFF, mstscax takes the legacy path
+            // and the credentials ride the Client Info PDU — which those
+            // servers honor with a direct login.
+            {
               CComPtr<IMsRdpClientAdvancedSettings6> adv6;
               HRESULT hrQ = vAdv.pdispVal->QueryInterface(__uuidof(IMsRdpClientAdvancedSettings6), (void**)&adv6);
               if (SUCCEEDED(hrQ) && adv6) {
-                hrP = adv6->put_EnableCredSspSupport(VARIANT_TRUE);
+                hrP = adv6->put_EnableCredSspSupport(
+                    s->opt.enableCredSsp ? VARIANT_TRUE : VARIANT_FALSE);
               } else {
                 hrP = hrQ;
               }
-            } else {
-              hrP = S_OK;
+            }
+            // SmartSizing: scale the remote desktop to fit the popup's client
+            // area whenever the negotiated size disagrees with it. Targets
+            // that ignore dynamic resolution changes (xrdp's Xvnc backend)
+            // otherwise leave a smaller desktop glued to the top-left corner
+            // with empty desktop background around it, and never show
+            // scrollbars. When the sizes match — full live-resize targets —
+            // the scaling is 1:1 and quality is unaffected.
+            CComPtr<IMsRdpClientAdvancedSettings> adv1;
+            if (SUCCEEDED(vAdv.pdispVal->QueryInterface(__uuidof(IMsRdpClientAdvancedSettings), (void**)&adv1)) && adv1) {
+              HRESULT hrSs = adv1->put_SmartSizing(VARIANT_TRUE);
+              NativeTrace("[rdphost] SmartSizing hr=0x%08lx", (unsigned long)hrSs);
             }
           }
         }
       }
-      NativeTrace("[rdphost] advSettings(dispatch): QI=0x%08lx name=0x%08lx port=0x%08lx credSsp=0x%08lx",
-                  (unsigned long)hrD, (unsigned long)hrN, (unsigned long)hrPort, (unsigned long)hrP);
+      NativeTrace("[rdphost] advSettings(dispatch): QI=0x%08lx name=0x%08lx port=0x%08lx credSsp=0x%08lx credSspVal=%d userLen=%zu",
+                  (unsigned long)hrD, (unsigned long)hrN, (unsigned long)hrPort, (unsigned long)hrP,
+                  (int)s->opt.enableCredSsp, s->opt.username.size());
     }
 
     // Advise the event sink.
@@ -733,6 +983,9 @@ class Manager {
     if (s->owner) {
       s->host.SetWindowPos(s->owner, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
     }
+    // Owner tracking: WinEvents give us every owner move/resize step (the
+    // JS viewport-relative rect is blind to window moves by construction).
+    TryInstallWinEventHook();
     NativeTrace("[rdphost] DoCreate: settings+sink done, storing session");
     sessions_[s->id] = std::move(s);
     p->ok = true;
@@ -772,7 +1025,16 @@ class Manager {
   std::mutex pm_;
   std::unordered_map<SessionId, RECT> pendingBounds_;
   std::unordered_map<SessionId, std::pair<long, long>> pendingDisp_;
+  std::unordered_map<SessionId, bool> visible_;
+  // Tracks owner-window moves for immediate re-anchoring (installed on first
+  // create; WINEVENT_OUTOFCONTEXT callbacks are dispatched by this thread's
+  // message loop, so sessions_ access stays single-threaded).
+  HWINEVENTHOOK winEventHook_ = nullptr;
 };
+
+void ReplayPendingDisplayOnConnected(SessionId id) {
+  Manager::Inst().FlushPendingDisplayForPublic(id);
+}
 
 LRESULT CALLBACK MgrWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   if (msg == WM_CMD) {
@@ -780,6 +1042,16 @@ LRESULT CALLBACK MgrWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return 0;
   }
   return DefWindowProcW(h, msg, wp, lp);
+}
+
+void CALLBACK WinEventProc(HWINEVENTHOOK, DWORD event, HWND hwnd, LONG idObject,
+                           LONG, DWORD, DWORD) {
+  // idChild==0 + OBJID_WINDOW: the top-level window itself moved/resized,
+  // not one of its internal child objects.
+  if (event == EVENT_OBJECT_LOCATIONCHANGE && idObject == OBJID_WINDOW &&
+      hwnd != nullptr) {
+    Manager::Inst().ReanchorForOwnerPublic(hwnd);
+  }
 }
 
 }  // namespace
@@ -840,6 +1112,10 @@ bool SessionDisconnect(SessionId id) { return Manager::Inst().Post(CMD_DISCONNEC
 bool SessionSetBounds(SessionId id, const RECT& r) {
   Manager::Inst().QueueBounds(id, r);
   return Manager::Inst().Post(CMD_SETBOUNDS, id);
+}
+bool SessionSetVisible(SessionId id, bool visible) {
+  Manager::Inst().SetVisible(id, visible);
+  return true;
 }
 bool SessionUpdateDisplay(SessionId id, long w, long h) {
   Manager::Inst().QueueDisplay(id, w, h);

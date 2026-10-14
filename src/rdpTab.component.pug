@@ -1,9 +1,51 @@
 .hole-wrap
     .hole(#hole)
+        // Connection gate: an editable form (prefilled from the profile) plus
+        // the connect action. Empty/builtin profiles start blank — the tab is
+        // fully connectable from here. Reconnects after drops reuse it.
+        .rdp-gate(*ngIf='state !== "connected"')
+            .rdp-gate-card
+                .rdp-gate-head
+                    i.fas.fa-desktop
+                    .rdp-gate-title {{ profile.name }}
+                .rdp-gate-form
+                    .rdp-form-row
+                        input.form-control(
+                            type='text',
+                            [(ngModel)]='connForm.host',
+                            [disabled]='busy',
+                            placeholder='Host',
+                            autocomplete='off',
+                            (keyup.enter)='reconnect()')
+                        input.form-control.rdp-port(
+                            type='number',
+                            [(ngModel)]='connForm.port',
+                            [disabled]='busy',
+                            placeholder='Port',
+                            (keyup.enter)='reconnect()')
+                    .rdp-form-row
+                        input.form-control(
+                            type='text',
+                            [(ngModel)]='connForm.username',
+                            [disabled]='busy',
+                            placeholder='Username',
+                            autocomplete='off',
+                            (keyup.enter)='reconnect()')
+                        input.form-control(
+                            type='password',
+                            [(ngModel)]='connForm.password',
+                            [disabled]='busy',
+                            placeholder='Password',
+                            (keyup.enter)='reconnect()')
+                .rdp-gate-detail(*ngIf='stateDetail') {{ stateDetail }}
+                button.btn.btn-primary.rdp-gate-btn(
+                    (click)='reconnect()',
+                    [disabled]='busy')
+                    i.fas.fa-circle-notch.fa-spin(*ngIf='busy')
+                    span {{ gateActionLabel }}
     .rdp-status-bar
-        span.rdp-state {{ state }}
-        span.rdp-detail(*ngIf='stateDetail')  {{ stateDetail }}
-        button.btn.btn-sm.btn-link((click)='reconnect()', *ngIf='showReconnect') reconnect
+        span.rdp-state(class='{{ state }}') {{ state }}
+        span.rdp-target {{ targetText }}
 .rdp-diag(*ngIf='diag && diag.status !== "ok"')
     h3 ActiveX RDP bridge unavailable
     p {{ diag.detail }}

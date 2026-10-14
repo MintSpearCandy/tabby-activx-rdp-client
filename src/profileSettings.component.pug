@@ -54,3 +54,11 @@
         type='number',
         [(ngModel)]='profile.options.height',
         placeholder='height')
+
+.form-line
+    .header
+        .title NLA / CredSSP
+        .description Turn off for servers without NLA (e.g. xrdp) — the stored username and password then log in automatically instead of the server showing its own logon screen
+    input.form-check-input(
+        type='checkbox',
+        [(ngModel)]='profile.options.enableCredSsp')

@@ -16,6 +16,8 @@ public class Win {
   [DllImport("user32.dll")] public static extern IntPtr FindWindowW([MarshalAs(UnmanagedType.LPWStr)] string cls, [MarshalAs(UnmanagedType.LPWStr)] string title);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr ctx);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
   public struct RECT { public int L, T, R, B; }
 }
 "@
@@ -36,6 +38,14 @@ $r = New-Object Win+RECT
 [Win]::GetWindowRect($h, [ref]$r) | Out-Null
 $w = $r.R - $r.L; $ht = $r.B - $r.T
 Write-Output ("window 0x{0:x} rect=({1},{2} {3}x{4})" -f $h, $r.L, $r.T, $w, $ht)
+
+# Foreground the window first: CopyFromScreen captures the screen region, so
+# anything stacked above the target would pollute the shot. A background
+# process may only take foreground after an ALT keypress.
+[Win]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)
+[Win]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
+[void][Win]::SetForegroundWindow($h)
+Start-Sleep -Milliseconds 400
 
 $bmp = New-Object System.Drawing.Bitmap($w, $ht)
 $g = [System.Drawing.Graphics]::FromImage($bmp)
