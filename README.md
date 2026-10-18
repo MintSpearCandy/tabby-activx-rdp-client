@@ -224,6 +224,30 @@ stored credentials → connected straight into the logged-in XFCE desktop,
 no greeter (`scripts/greeter-login.ps1` and its SendKeys automation are no
 longer needed for this path).
 
+### i18n and Enter-to-connect (2026-10-17)
+
+- **Translations** — en/zh tables in `src/i18n.ts` covering the settings
+  tab, the profile form, the connection gate and the status strip. Same
+  approach as BetterConfiger: @ngx-translate/core is not importable from a
+  user plugin, so the plugin keeps its own table keyed by tabby-core's
+  `LocaleService`; language switches re-render via `localeChanged$`.
+  "ActiveX RDP" stays untranslated (brand name). Verified on a zh-CN
+  instance: 主机/端口/用户名/密码 placeholders, 连接 button, 空闲/已连接
+  states.
+- **Enter connects** — a document-level `keydown.enter` host listener fires
+  `reconnect()` while the tab is not connected: events from inside the
+  component always count, body-targeted events count only when this pane
+  is on screen and no modal is open, buttons are skipped (native click).
+  The gate card also takes focus when shown (otherwise body-focused Enter
+  never bubbles through the host). Verified with focus deliberately left
+  on `<body>`: Enter → connected.
+
+Test-environment notes: the arc instance now runs CDP on **9243** (a new
+`mux` instance claimed 9242), and the WSL test target needs a keep-alive
+process during tests — WSL's `vmIdleTimeout` shuts the whole VM down mid
+RDP session otherwise (the disconnect looks like reason 2/516 from the
+client side).
+
 ## Dev
 
 ```bash

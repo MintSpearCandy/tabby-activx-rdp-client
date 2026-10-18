@@ -2,40 +2,30 @@ h2 ActiveX RDP
 
 .form-line
     .header
-        .title About
-        .description.
-            RDP desktops rendered by the system ActiveX control (mstscax.dll).
-            The connection — TLS, CredSSP, the socket — is made end-to-end by
-            the Microsoft-signed RDP stack; the plugin's native code never
-            touches the network.
+        .title {{ t('arc.settings.about.title') }}
+        .description {{ t('arc.settings.about.desc') }}
 
 .form-line(*ngIf='diag?.status === "ok"')
     .header
-        .title Native bridge
-        .description Loaded and operational.
+        .title {{ t('arc.settings.addon.title') }}
+        .description {{ t('arc.settings.bridge.ok') }}
 
 .form-line(*ngIf='diag && diag.status !== "ok"')
     .header
-        .title Native bridge problem
+        .title {{ t('arc.settings.bridge.bad') }}
         .description {{ diag.detail }}
 
 .form-line(*ngIf='addonPath')
     .header
-        .title Addon binary
-        .description {{ addonPath }} — rebuild with `npm run build:native` in the plugin checkout.
+        .title {{ t('arc.settings.addon.title') }}
+        .description {{ t('arc.settings.addon.desc', { path: addonPath }) }}
 
 .form-line
     .header
-        .title Passwords
-        .description.
-            Enable Tabby's Vault (Settings › Vault) to keep RDP passwords
-            encrypted; without it they are stored in plain text in config.yaml.
+        .title {{ t('arc.settings.passwords.title') }}
+        .description {{ t('arc.settings.passwords.desc') }}
 
 .form-line
     .header
-        .title Keyboard
-        .description.
-            While the RDP desktop has focus, all keys go to the remote session
-            and Tabby's own hotkeys do not fire. Bind and use "RDP: disconnect"
-            / "RDP: reconnect" in Settings › Hotkeys — global shortcuts keep
-            working regardless of focus.
+        .title {{ t('arc.settings.keyboard.title') }}
+        .description {{ t('arc.settings.keyboard.desc') }}

@@ -3,8 +3,10 @@
         // Connection gate: an editable form (prefilled from the profile) plus
         // the connect action. Empty/builtin profiles start blank — the tab is
         // fully connectable from here. Reconnects after drops reuse it.
+        // Enter anywhere in the tab triggers the action (host listener).
         .rdp-gate(*ngIf='state !== "connected"')
-            .rdp-gate-card
+            .rdp-gate-card(
+                tabindex='-1')
                 .rdp-gate-head
                     i.fas.fa-desktop
                     .rdp-gate-title {{ profile.name }}
@@ -14,29 +16,25 @@
                             type='text',
                             [(ngModel)]='connForm.host',
                             [disabled]='busy',
-                            placeholder='Host',
-                            autocomplete='off',
-                            (keyup.enter)='reconnect()')
+                            placeholder="{{ t('arc.gate.host') }}",
+                            autocomplete='off')
                         input.form-control.rdp-port(
                             type='number',
                             [(ngModel)]='connForm.port',
                             [disabled]='busy',
-                            placeholder='Port',
-                            (keyup.enter)='reconnect()')
+                            placeholder="{{ t('arc.gate.port') }}")
                     .rdp-form-row
                         input.form-control(
                             type='text',
                             [(ngModel)]='connForm.username',
                             [disabled]='busy',
-                            placeholder='Username',
-                            autocomplete='off',
-                            (keyup.enter)='reconnect()')
+                            placeholder="{{ t('arc.gate.username') }}",
+                            autocomplete='off')
                         input.form-control(
                             type='password',
                             [(ngModel)]='connForm.password',
                             [disabled]='busy',
-                            placeholder='Password',
-                            (keyup.enter)='reconnect()')
+                            placeholder="{{ t('arc.gate.password') }}")
                 .rdp-gate-detail(*ngIf='stateDetail') {{ stateDetail }}
                 button.btn.btn-primary.rdp-gate-btn(
                     (click)='reconnect()',
@@ -44,9 +42,9 @@
                     i.fas.fa-circle-notch.fa-spin(*ngIf='busy')
                     span {{ gateActionLabel }}
     .rdp-status-bar
-        span.rdp-state(class='{{ state }}') {{ state }}
+        span.rdp-state(class='{{ state }}') {{ stateText }}
         span.rdp-target {{ targetText }}
 .rdp-diag(*ngIf='diag && diag.status !== "ok"')
-    h3 ActiveX RDP bridge unavailable
+    h3 {{ t('arc.diag.title') }}
     p {{ diag.detail }}
-    p.dim The tab stays open; nothing will crash.
+    p.dim {{ t('arc.diag.stay') }}

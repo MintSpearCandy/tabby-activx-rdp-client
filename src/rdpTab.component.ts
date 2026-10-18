@@ -1,8 +1,9 @@
-import { Component, Input, ViewChild, ElementRef, Injector, NgZone, OnInit, AfterViewInit, OnDestroy } from '@angular/core'
+import { Component, Input, ViewChild, ElementRef, Injector, NgZone, OnInit, AfterViewInit, AfterViewChecked, OnDestroy, HostListener } from '@angular/core'
 import { BaseTabComponent, RecoveryToken } from 'tabby-core'
 
 import { RdpEvent, RdpProfile } from './api'
 import { RdpCredentialsService } from './credentials'
+import { ArcTranslator } from './i18n'
 import * as native from './nativeBridge'
 import { RdpViewHost } from './viewHost'
 import { nativeWindowHandle } from './electronApi'
@@ -14,7 +15,7 @@ type RdpTabState = 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error
     template: require('./rdpTab.component.pug'),
     styles: [require('./rdpTab.component.scss')],
 })
-export class RdpTabComponent extends BaseTabComponent implements OnInit, AfterViewInit, OnDestroy {
+export class RdpTabComponent extends BaseTabComponent implements OnInit, AfterViewInit, AfterViewChecked, OnDestroy {
     static readonly RECOVERY_TYPE = 'activx-rdp-tab'
 
     @Input() profile: RdpProfile
@@ -52,11 +53,16 @@ export class RdpTabComponent extends BaseTabComponent implements OnInit, AfterVi
 
     get gateActionLabel (): string {
         switch (this.state) {
-            case 'connecting': return 'Connecting…'
-            case 'error': return 'Retry'
-            case 'disconnected': return 'Reconnect'
-            default: return 'Connect'
+            case 'connecting': return this.t('arc.gate.connecting')
+            case 'error': return this.t('arc.gate.retry')
+            case 'disconnected': return this.t('arc.gate.reconnect')
+            default: return this.t('arc.gate.connect')
         }
+    }
+
+    /** Translated state name for the status strip. */
+    get stateText (): string {
+        return this.t(`arc.state.${this.state}`)
     }
 
     private sessionId: number | null = null
@@ -67,8 +73,53 @@ export class RdpTabComponent extends BaseTabComponent implements OnInit, AfterVi
         injector: Injector,
         private zone: NgZone,
         private credentials: RdpCredentialsService,
+        public i18n: ArcTranslator,
+        private elementRef: ElementRef<HTMLElement>,
     ) {
         super(injector)
+    }
+
+    private get hostEl (): HTMLElement | null {
+        return this.elementRef?.nativeElement ?? null
+    }
+
+    /** Template hook. */
+    t (key: string, params?: Record<string, string>): string {
+        return this.i18n.t(key, params)
+    }
+
+    /** Enter anywhere in the (not-connected) tab connects — the gate is the
+     * only surface in a non-connected tab, so Enter doubles as the hotkey
+     * for its action. Document-level (with ownership checks) because focus
+     * can sit on <body>, whose events never bubble through this host:
+     *   - events from inside this component's host always count;
+     *   - body-targeted events count only while this pane is on screen and
+     *     no modal (palette etc.) is open;
+     *   - buttons are skipped (their native Enter click already fires).
+     */
+    @HostListener('document:keydown.enter', ['$event'])
+    onHostEnter (event: KeyboardEvent): void {
+        if (this.state === 'connected' || this.state === 'connecting') {
+            return
+        }
+        if (event.target instanceof HTMLButtonElement) {
+            return
+        }
+        const host = this.hostEl
+        const inHost = !!host && host.contains(event.target as Node)
+        if (!inHost) {
+            if (event.target !== document.body) {
+                return  // aimed at some other UI element
+            }
+            if (document.querySelector('ngb-modal-window')) {
+                return  // a modal/palette is open — Enter belongs to it
+            }
+            const r = this.hole?.nativeElement?.getBoundingClientRect()
+            if (!r || r.width < 2 || r.x < -5000 || r.y < -5000) {
+                return  // our pane is parked off-screen (inactive tab)
+            }
+        }
+        this.reconnect()
     }
 
     async getRecoveryToken (): Promise<RecoveryToken | null> {
@@ -112,6 +163,19 @@ export class RdpTabComponent extends BaseTabComponent implements OnInit, AfterVi
         // profile must not fire an RDP connection on its own.
     }
 
+    ngAfterViewChecked (): void {
+        // Keep the focus inside the gate card while it is shown (and nothing
+        // else holds it): Enter events must originate inside the component
+        // for the host listener to see them — with focus on <body> the
+        // keydown never bubbles through this component's host.
+        if (this.state !== 'connected' && document.activeElement === document.body) {
+            const card = this.hole?.nativeElement.querySelector('.rdp-gate-card')
+            if (card instanceof HTMLElement) {
+                card.focus({ preventScroll: true })
+            }
+        }
+    }
+
     ngOnDestroy (): void {
         this.stopSession()
         super.ngOnDestroy()
@@ -121,7 +185,7 @@ export class RdpTabComponent extends BaseTabComponent implements OnInit, AfterVi
         const o = this.profile.options
         const f = this.connForm
         if (!f.host) {
-            this.applyState('idle', 'enter a host to connect')
+            this.applyState('idle', this.t('arc.gate.enterHost'))
             return
         }
         const hwnd = nativeWindowHandle()
@@ -251,7 +315,7 @@ export class RdpTabComponent extends BaseTabComponent implements OnInit, AfterVi
 
     reconnect (): void {
         if (this.sessionId == null && !this.connForm.host) {
-            this.stateDetail = 'enter a host to connect'
+            this.stateDetail = this.t('arc.gate.enterHost')
             return
         }
         this.state = 'connecting'

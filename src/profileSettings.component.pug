@@ -1,7 +1,7 @@
 .form-line
     .header
-        .title Host
-        .description Remote host (Windows RDP server, or an xrdp host on Linux)
+        .title {{ t('arc.profile.host.title') }}
+        .description {{ t('arc.profile.host.desc') }}
     input.form-control(
         type='text',
         [(ngModel)]='profile.options.host',
@@ -9,56 +9,56 @@
 
 .form-line
     .header
-        .title Port
-        .description RDP port (3389 unless redirected)
+        .title {{ t('arc.profile.port.title') }}
+        .description {{ t('arc.profile.port.desc') }}
     input.form-control(
         type='number',
         [(ngModel)]='profile.options.port')
 
 .form-line
     .header
-        .title Username
-        .description Leave empty to use the control's own logon UI
+        .title {{ t('arc.profile.username.title') }}
+        .description {{ t('arc.profile.username.desc') }}
     input.form-control(
         type='text',
         [(ngModel)]='profile.options.username')
 
 .form-line
     .header
-        .title Domain
-        .description Optional (Windows accounts only)
+        .title {{ t('arc.profile.domain.title') }}
+        .description {{ t('arc.profile.domain.desc') }}
     input.form-control(
         type='text',
         [(ngModel)]='profile.options.domain')
 
 .form-line
     .header
-        .title Password
-        .description( *ngIf='passwordLoaded') Stored in {{ credentials.storageName() }}
-        .description( *ngIf='!passwordLoaded') ...
+        .title {{ t('arc.profile.password.title') }}
+        .description(*ngIf='passwordLoaded') {{ t('arc.profile.password.storage', { store: credentials.storageName() }) }}
+        .description(*ngIf='!passwordLoaded') ...
     input.form-control(
         type='password',
         [ngModel]='passwordValue',
         (ngModelChange)='onPasswordChange($event)',
-        placeholder='(not set)')
+        placeholder="{{ t('arc.profile.password.placeholder') }}")
 
 .form-line
     .header
-        .title Initial desktop size
-        .description 0 × 0 = follow the pane size at connect time
+        .title {{ t('arc.profile.size.title') }}
+        .description {{ t('arc.profile.size.desc') }}
     input.form-control(
         type='number',
         [(ngModel)]='profile.options.width',
-        placeholder='width')
+        placeholder="{{ t('arc.profile.size.width') }}")
     input.form-control(
         type='number',
         [(ngModel)]='profile.options.height',
-        placeholder='height')
+        placeholder="{{ t('arc.profile.size.height') }}")
 
 .form-line
     .header
-        .title NLA / CredSSP
-        .description Turn off for servers without NLA (e.g. xrdp) — the stored username and password then log in automatically instead of the server showing its own logon screen
+        .title {{ t('arc.profile.credssp.title') }}
+        .description {{ t('arc.profile.credssp.desc') }}
     input.form-check-input(
         type='checkbox',
         [(ngModel)]='profile.options.enableCredSsp')
