@@ -38,6 +38,23 @@ export function nativeWindowHandle (): Buffer | null {
 }
 
 /**
+ * Return keyboard focus to this window's webContents. Hiding the RDP popup
+ * while it holds focus can leave the thread with a NULL focus window: the
+ * Tabby window stays foreground, but every keystroke (Ctrl+C, hotkeys) is
+ * routed into a void until the user happens to click inside the client
+ * area — clicking the title bar or taskbar does not recover it. Calling
+ * this after every hide we initiate makes the recovery unconditional
+ * (idempotent when focus is already in the DOM).
+ */
+export function focusWebContents (): void {
+    try {
+        remote.getCurrentWebContents().focus()
+    } catch {
+        // window going away; nothing to restore
+    }
+}
+
+/**
  * Scale factor of the display the window is on, in the sense of Electron's
  * `screen` module (1.0 = 100%). `getBoundingClientRect` values are in CSS px
  * (= window DIP including the host's zoom factor); physical pixels =

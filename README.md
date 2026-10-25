@@ -248,6 +248,31 @@ process during tests — WSL's `vmIdleTimeout` shuts the whole VM down mid
 RDP session otherwise (the disconnect looks like reason 2/516 from the
 client side).
 
+### NULL-focus keyboard blackout fix (2026-10-25, user report)
+
+**Symptom**: in some cases Tabby "captured" every hotkey (Ctrl+C etc.) even
+with focus outside the remote desktop; only restarting Tabby cleared it.
+
+**Root cause** (reproduced on the arc instance): hiding the popup while the
+mstscax input window (`IHWindowClass`) holds focus can leave the thread
+with a **NULL focus window** — observed on network-level disconnects
+(WSL `wsl --shutdown`: no TCP RST, so the control tears down asynchronously)
+but not on immediate disconnects (killing the xrdp connection process).
+With NULL focus and Tabby still foreground, every keystroke is routed into
+a void: DOM keydown never fires, and clicking the title bar or taskbar does
+not recover it — only a click inside the client area does, which is why it
+felt like a stuck capture. Forensics: `GetGUIThreadInfo` focus field +
+real-input Ctrl+C vs a CDP keydump (focus=0x0 → `[]`; focus=Electron →
+keys arrive).
+
+**Fix**: every path where WE initiate hiding the popup now returns focus
+explicitly via `webContents.focus()` (idempotent when focus is already in
+the DOM): session deactivation (disconnected/fatal/logon error), tab
+parking, and tab destruction. Overlay yielding does not (focus is already
+in the DOM when an overlay is up). Verified end to end: real-input Ctrl+C
+with zero clicks after a VM-kill disconnect reaches the DOM (was `[]`
+before the fix).
+
 ## Dev
 
 ```bash

@@ -6,7 +6,7 @@ import { RdpCredentialsService } from './credentials'
 import { ArcTranslator } from './i18n'
 import * as native from './nativeBridge'
 import { RdpViewHost } from './viewHost'
-import { nativeWindowHandle } from './electronApi'
+import { nativeWindowHandle, focusWebContents } from './electronApi'
 
 type RdpTabState = 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error'
 
@@ -178,6 +178,9 @@ export class RdpTabComponent extends BaseTabComponent implements OnInit, AfterVi
 
     ngOnDestroy (): void {
         this.stopSession()
+        // Destroying the popup while it holds focus leaves the same NULL
+        // focus window as hiding it — hand focus back to the DOM.
+        focusWebContents()
         super.ngOnDestroy()
     }
 

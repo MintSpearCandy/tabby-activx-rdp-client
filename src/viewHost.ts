@@ -19,6 +19,7 @@
  * WinEvents and re-anchors natively, per move step.
  */
 import * as native from './nativeBridge'
+import { focusWebContents } from './electronApi'
 import { holeToViewportPhysical, parkedRect, physicalKey, PhysicalRect } from './geometry'
 
 /** Hit-test targets that never block the mouse, whatever their CSS. */
@@ -53,7 +54,7 @@ export class RdpViewHost {
             return
         }
         this.sessionActive = v
-        this.pushVisibility(this.effectiveVisible())
+        this.pushVisibility(this.effectiveVisible(), { restoreFocus: true })
     }
 
     /** Force the next frame to re-push the rect (e.g. after 'connected'). */
@@ -78,7 +79,16 @@ export class RdpViewHost {
         return this.sessionActive && !this.overlayHit && !this.parked
     }
 
-    private pushVisibility (visible: boolean): void {
+    /**
+     * Push a visibility change to the popup. `restoreFocus` is set for
+     * transitions WE initiate because the desktop stopped being usable
+     * (disconnect/error, tab parked): if the mstscax window held focus at
+     * that moment, hiding it can leave the thread with a NULL focus window
+     * while Tabby stays foreground — every keystroke then vanishes until a
+     * click inside the client area. Overlay yielding never restores (focus
+     * is already in the DOM when an overlay is up).
+     */
+    private pushVisibility (visible: boolean, opts?: { restoreFocus?: boolean }): void {
         if (!this.sessionId) {
             return
         }
@@ -86,6 +96,9 @@ export class RdpViewHost {
             native.get().setVisible(this.sessionId, visible)
         } catch {
             // session gone; kill() will clean up
+        }
+        if (!visible && opts?.restoreFocus) {
+            focusWebContents()
         }
     }
 
@@ -140,7 +153,7 @@ export class RdpViewHost {
             // (inactive tabs move to left:-1000%) — hide the popup outright
             // rather than leaving a visible window in the void (DWM still
             // composes off-screen windows). Restore on the way back.
-            this.pushVisibility(this.effectiveVisible())
+            this.pushVisibility(this.effectiveVisible(), { restoreFocus: true })
         }
         let phys: PhysicalRect
         if (this.parked) {
